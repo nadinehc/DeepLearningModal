@@ -22,6 +22,22 @@ from dataset.video_dataset import VideoFrameDataset, collect_video_samples
 from train import build_model
 from utils import build_transforms, set_seed
 
+import wandb
+
+# Start a new wandb run to track this script.
+run = wandb.init(
+    # Set the wandb entity where your project will be logged (generally your team name).
+    entity="nadinehagechehade-project",
+    # Set the wandb project where this run will be logged.
+    project="my-awesome-project",
+    # Track hyperparameters and run metadata.
+    config={
+        "learning_rate": 0.02,
+        "architecture": "CNN",
+        "dataset": "CIFAR-100",
+        "epochs": 10,
+    },
+)
 
 def load_model_from_checkpoint(checkpoint: Dict[str, Any], device: torch.device) -> torch.nn.Module:
     """
@@ -36,7 +52,7 @@ def load_model_from_checkpoint(checkpoint: Dict[str, Any], device: torch.device)
             "full Hydra config is saved with the weights."
         )
     cfg = OmegaConf.create(checkpoint["config"])
-    model = build_model(cfg)
+    model = build_model(cfg) # type: ignore
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
     model.eval()
@@ -115,7 +131,6 @@ def main(cfg: DictConfig) -> None:
     print(f"Validation samples: {len(val_dataset)}")
     print(f"Top-1 accuracy: {top1_accuracy:.4f}")
     print(f"Top-5 accuracy: {top5_accuracy:.4f}")
-
 
 if __name__ == "__main__":
     main()

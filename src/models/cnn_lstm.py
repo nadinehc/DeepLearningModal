@@ -27,7 +27,7 @@ class CNNLSTM(nn.Module):
         weights = models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
         backbone = models.resnet18(weights=weights)
         feature_dim = backbone.fc.in_features  # 512
-        backbone.fc = nn.Identity()
+        backbone.fc = nn.Identity() # type: ignore
         self.backbone = backbone
 
         self.lstm = nn.LSTM(

@@ -1,0 +1,6 @@
+# @package _global_
+# Frame CNN + Attention (Track A: pretrained=false, Track B: pretrained=true)
+model:
+  name: cnn_attention
+  pretrained: false
+  num_classes: ${num_classes}

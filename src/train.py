@@ -21,14 +21,18 @@ from typing import Any, Dict, Tuple
 import hydra
 import torch
 import torch.nn as nn
+from torchvision import transforms
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from dataset.video_dataset import VideoFrameDataset, collect_video_samples
 from models.cnn_baseline import CNNBaseline
 from models.cnn_lstm import CNNLSTM
+from models.cnn_attention import CNNAttention
+from models.cnn_3d import CNN3D
 from utils import build_transforms, set_seed, split_train_val
 
+import wandb
 
 def build_model(cfg: DictConfig) -> nn.Module:
     """Create the model described by cfg.model.name."""
@@ -45,6 +49,14 @@ def build_model(cfg: DictConfig) -> nn.Module:
             pretrained=pretrained,
             lstm_hidden_size=int(hidden),
         )
+    if name == "cnn_attention":
+        return CNNAttention(
+            num_classes=num_classes,
+            pretrained=pretrained,
+            num_frames=int(cfg.dataset.num_frames),
+        )
+    if name == "cnn_3d":
+        return CNN3D(num_classes=num_classes)    
 
     raise ValueError(f"Unknown model.name: {name}")
 
@@ -115,6 +127,12 @@ def evaluate_epoch(
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 def main(cfg: DictConfig) -> None:
+    run = wandb.init(
+        entity="nadinehagechehade-project",
+    # Set the wandb project where this run will be logged.
+    project="challenge-modal",
+        config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)   # type: ignore
+    )
     print(OmegaConf.to_yaml(cfg))
 
     set_seed(int(cfg.dataset.seed))
@@ -140,12 +158,30 @@ def main(cfg: DictConfig) -> None:
 
     # Match normalization to pretrained flag (ImageNet stats when using pretrained weights).
     use_imagenet_norm = bool(cfg.model.pretrained)
-    train_transform = build_transforms(
-        is_training=True, use_imagenet_norm=use_imagenet_norm
-    )
-    eval_transform = build_transforms(
-        is_training=False, use_imagenet_norm=use_imagenet_norm
-    )
+    # train_transform = build_transforms(
+    #     is_training=True, use_imagenet_norm=use_imagenet_norm
+    # )
+    # eval_transform = build_transforms(
+    #     is_training=False, use_imagenet_norm=use_imagenet_norm
+    # )
+
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(224, scale=(0.6, 1.0)),
+        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2),
+        transforms.RandomGrayscale(p=0.1),
+        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),  # simpler stats from scratch
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],   # ImageNet stats
+                         std=[0.229, 0.224, 0.225]),
+    ])
+
+    eval_transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+    ])
 
     train_dataset = VideoFrameDataset(
         root_dir=train_dir,
@@ -177,7 +213,20 @@ def main(cfg: DictConfig) -> None:
 
     model = build_model(cfg).to(device)
     loss_fn = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg.training.lr))
+    optimizer = torch.optim.AdamW(
+        model.parameters(), 
+        lr=float(cfg.training.lr),
+        weight_decay=1e-2,
+    )
+
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[
+            torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, total_iters=5),
+            torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=95),
+        ],
+        milestones=[5]
+    )
 
     best_val_accuracy = 0.0
     checkpoint_path = Path(cfg.training.checkpoint_path).resolve()
@@ -193,6 +242,10 @@ def main(cfg: DictConfig) -> None:
             f"train loss {train_loss:.4f} acc {train_acc:.4f} | "
             f"val loss {val_loss:.4f} acc {val_acc:.4f}"
         )
+
+        scheduler.step()
+
+        run.log({"Train Loss": train_loss, "Val Loss": val_loss, "Train Accuracy": train_acc, "Val Accuracy": val_acc})
 
         if val_acc > best_val_accuracy:
             best_val_accuracy = val_acc
@@ -216,7 +269,7 @@ def main(cfg: DictConfig) -> None:
             )
 
     print(f"Done. Best validation accuracy: {best_val_accuracy:.4f}")
-
+    wandb.finish()
 
 if __name__ == "__main__":
     main()

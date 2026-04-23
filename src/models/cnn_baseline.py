@@ -26,7 +26,7 @@ class CNNBaseline(nn.Module):
 
         # Replace the original 1000-way ImageNet head with identity; we add our own layer.
         feature_dim = backbone.fc.in_features  # 512 for ResNet18
-        backbone.fc = nn.Identity()
+        backbone.fc = nn.Identity() # type: ignore
 
         self.backbone = backbone
         self.classifier = nn.Linear(feature_dim, num_classes)

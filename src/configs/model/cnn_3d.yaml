@@ -1,0 +1,6 @@
+# @package _global_
+
+model:
+  name: cnn_3d
+  pretrained: false
+  num_classes: ${num_classes}
