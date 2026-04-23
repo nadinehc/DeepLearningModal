@@ -7,6 +7,8 @@
 - use masked self attention to encode time
 - treat it as a simple classification : 3D deep convolution
 
+- hi nadine
+
 # Track B - open world
 - use pretrained model
 - finetune on this dataset
