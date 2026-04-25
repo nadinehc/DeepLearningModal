@@ -11,7 +11,7 @@ class BasicBlock3D(nn.Module):
             kernel_size=3,
             stride=(1, stride, stride),
             padding=1,
-            bias=False
+            bias=True
         )
         self.bn1 = nn.BatchNorm3d(out_channels)
 
@@ -20,7 +20,7 @@ class BasicBlock3D(nn.Module):
             kernel_size=3,
             stride=1,
             padding=1,
-            bias=False
+            bias=True
         )
         self.bn2 = nn.BatchNorm3d(out_channels)
 
@@ -50,32 +50,31 @@ class BasicBlock3D(nn.Module):
 
 
 class CNN3D(nn.Module):
-    def __init__(self, num_classes=174):
+    def __init__(self, num_classes=33):
         super().__init__()
 
         # ---- Stem ----
         self.stem = nn.Sequential(
             nn.Conv3d(
-                3, 64,
-                kernel_size=(3, 7, 7),
+                3, 32,
+                kernel_size=(3, 3, 3),
                 stride=(1, 2, 2),
                 padding=(1, 3, 3),
                 bias=False
             ),
-            nn.BatchNorm3d(64),
+            nn.BatchNorm3d(32),
             nn.ReLU(inplace=True),
             nn.MaxPool3d(kernel_size=(1, 3, 3), stride=(1, 2, 2), padding=(0, 1, 1))
         )
 
         # ---- Stages ----
-        self.layer1 = self._make_layer(64, 64, blocks=2, stride=1)
-        self.layer2 = self._make_layer(64, 128, blocks=2, stride=2)
-        self.layer3 = self._make_layer(128, 256, blocks=2, stride=2)
-        self.layer4 = self._make_layer(256, 512, blocks=2, stride=2)
+        self.layer1 = self._make_layer(32, 32, blocks=2, stride=1)
+        self.layer2 = self._make_layer(32, 64, blocks=2, stride=2)
+        self.layer3 = self._make_layer(64, 128, blocks=2, stride=2)
 
         # ---- Head ----
         self.pool = nn.AdaptiveAvgPool3d((1, 1, 1))
-        self.fc = nn.Linear(512, num_classes)
+        self.fc = nn.Linear(128, num_classes)
 
         self._init_weights()
 
@@ -87,11 +86,27 @@ class CNN3D(nn.Module):
 
     def _init_weights(self):
         for m in self.modules():
-            if isinstance(m, nn.Conv3d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out")
-            elif isinstance(m, nn.BatchNorm3d):
+            if isinstance(m, (nn.Conv2d, nn.Conv3d)):
+                nn.init.kaiming_normal_(
+                    m.weight,
+                    mode="fan_out",
+                    nonlinearity="relu"
+                )
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+            elif isinstance(m, (nn.BatchNorm2d, nn.BatchNorm3d)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out")
+                nn.init.constant_(m.bias, 0)
+
+        # Zero-init last BN in each residual block
+        for m in self.modules():
+            if isinstance(m, BasicBlock3D):
+                nn.init.constant_(m.bn2.weight, 0)
 
     def forward(self, x):
         # Rearrange for 3D Conv: (B, C, T, H, W)
@@ -100,7 +115,6 @@ class CNN3D(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
-        x = self.layer4(x)
 
         x = self.pool(x)
         x = x.flatten(1)
