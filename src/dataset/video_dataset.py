@@ -28,6 +28,11 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
+import torchvision.transforms as T
+import torchvision.transforms.functional as TF
+import random
+from torch.utils.data import DataLoader
+
 
 def _list_frame_paths(video_dir: Path) -> List[Path]:
     """All image files in a video folder, sorted by name."""
@@ -105,7 +110,7 @@ class VideoFrameDataset(Dataset):
         self,
         root_dir: str | Path,
         num_frames: int,
-        transform: Callable[[Image.Image], torch.Tensor],
+        transform: Callable,
         sample_list: Optional[List[Tuple[Path, int]]] = None,
     ) -> None:
         """
@@ -132,16 +137,65 @@ class VideoFrameDataset(Dataset):
         frame_paths = _list_frame_paths(video_dir)
         indices = _pick_frame_indices(len(frame_paths), self.num_frames)
 
-        frames: List[torch.Tensor] = []
+        frames = []
         for frame_index in indices:
             path = frame_paths[frame_index]
             with Image.open(path) as image:
                 rgb_image = image.convert("RGB")
+                frames.append(rgb_image)
             # transform: PIL -> (C, H, W)
-            tensor_chw = self.transform(rgb_image)
-            frames.append(tensor_chw)
+        tensor_chw = self.transform(frames, label)
 
         # Stack time dimension: (T, C, H, W)
-        video_tensor = torch.stack(frames, dim=0)
         label_tensor = torch.tensor(label, dtype=torch.long)
-        return video_tensor, label_tensor
+        return tensor_chw, label_tensor
+
+class VideoTransform:
+    """Applies consistent spatial transforms across all frames of a clip."""
+
+    def __init__(self, train=True, size=224):
+        self.train = train
+        self.size = size
+        self.normalize = T.Normalize(
+            mean=[0.5, 0.5, 0.5],
+            std=[0.5, 0.5, 0.5]
+        )
+
+    def __call__(self, frames, label):
+        # frames: List[PIL.Image] or Tensor [T, C, H, W]
+
+        if self.train:
+            # --- Sample random params ONCE, apply to all frames ---
+            i, j, h, w = T.RandomResizedCrop.get_params(
+                frames[0], scale=[0.6, 1.0], ratio=[0.75, 1.33]
+            )
+            # 18 and 19 are for classes pulling from left to right or the opposite
+            do_flip = label != 18 and label != 19 and random.random() > 0.5
+            brightness = random.uniform(0.8, 1.2)
+            contrast   = random.uniform(0.8, 1.2)
+            saturation = random.uniform(0.8, 1.2)
+            hue        = random.uniform(-0.1, 0.1)
+
+            processed = []
+            for frame in frames:
+                frame = TF.resized_crop(frame, i, j, h, w, [self.size, self.size])
+                if do_flip:
+                    frame = TF.hflip(frame)
+                frame = TF.adjust_brightness(frame, brightness)
+                frame = TF.adjust_contrast(frame, contrast)
+                frame = TF.adjust_saturation(frame, saturation)
+                frame = TF.adjust_hue(frame, hue)
+                frame = TF.to_tensor(frame)
+                frame = self.normalize(frame)
+                processed.append(frame)
+
+        else:  # val / test
+            processed = []
+            for frame in frames:
+                frame = TF.resize(frame, [224, 224])
+                frame = TF.center_crop(frame, [self.size])
+                frame = TF.to_tensor(frame)
+                frame = self.normalize(frame)
+                processed.append(frame)
+
+        return torch.stack(processed)  # List of [C, H, W] tensors

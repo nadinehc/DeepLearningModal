@@ -24,6 +24,7 @@ import torch.nn as nn
 from torchvision import transforms
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from dataset.video_dataset import VideoFrameDataset, collect_video_samples
 from models.cnn_baseline import CNNBaseline
@@ -67,14 +68,16 @@ def train_one_epoch(
     loss_fn: nn.Module,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-) -> Tuple[float, float]:
+    nb_epoch: int = 0,
+) -> Tuple[float, float, float]:
     """Returns (average loss, top-1 accuracy) on the training set for one epoch."""
     model.train()
     running_loss = 0.0
     correct = 0
+    correct_top5 = 0
     total = 0
 
-    for video_batch, labels in data_loader:
+    for video_batch, labels in tqdm(data_loader, desc=f"Epoch {nb_epoch + 1}"):
         # video_batch: (B, T, C, H, W), labels: (B,)
         video_batch = video_batch.to(device)
         labels = labels.to(device)
@@ -87,13 +90,15 @@ def train_one_epoch(
 
         running_loss += float(loss.item()) * labels.size(0)
         predictions = logits.argmax(dim=1)
+        _, top5_indices = torch.topk(logits, 5, 1, True)
         correct += int((predictions == labels).sum().item())
+        correct_top5 += (top5_indices == labels.view(-1, 1)).any(dim=1).sum().item()
         total += labels.size(0)
 
     average_loss = running_loss / max(total, 1)
     accuracy = correct / max(total, 1)
-    return average_loss, accuracy
-
+    acc_top5 = correct_top5 / max(total, 1)
+    return average_loss, accuracy, acc_top5
 
 @torch.no_grad()
 def evaluate_epoch(
@@ -101,11 +106,12 @@ def evaluate_epoch(
     data_loader: DataLoader,
     loss_fn: nn.Module,
     device: torch.device,
-) -> Tuple[float, float]:
+) -> Tuple[float, float, float]:
     """Returns (average loss, top-1 accuracy) on the validation loader."""
     model.eval()
     running_loss = 0.0
     correct = 0
+    correct_top5 = 0
     total = 0
 
     for video_batch, labels in data_loader:
@@ -117,12 +123,15 @@ def evaluate_epoch(
 
         running_loss += float(loss.item()) * labels.size(0)
         predictions = logits.argmax(dim=1)
+        _, top5_indices = torch.topk(logits, 5, 1, True)
         correct += int((predictions == labels).sum().item())
+        correct_top5 += (top5_indices == labels.view(-1, 1)).any(dim=1).sum().item()
         total += labels.size(0)
 
     average_loss = running_loss / max(total, 1)
     accuracy = correct / max(total, 1)
-    return average_loss, accuracy
+    acc_top5 = correct_top5 / max(total, 1)
+    return average_loss, accuracy, acc_top5
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
@@ -130,7 +139,7 @@ def main(cfg: DictConfig) -> None:
     run = wandb.init(
         entity="nadinehagechehade-project",
     # Set the wandb project where this run will be logged.
-    project="challenge-modal",
+    project="trackB",
         config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)   # type: ignore
     )
     print(OmegaConf.to_yaml(cfg))
@@ -158,30 +167,12 @@ def main(cfg: DictConfig) -> None:
 
     # Match normalization to pretrained flag (ImageNet stats when using pretrained weights).
     use_imagenet_norm = bool(cfg.model.pretrained)
-    # train_transform = build_transforms(
-    #     is_training=True, use_imagenet_norm=use_imagenet_norm
-    # )
-    # eval_transform = build_transforms(
-    #     is_training=False, use_imagenet_norm=use_imagenet_norm
-    # )
-
-    train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(224, scale=(0.6, 1.0)),
-        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2),
-        transforms.RandomGrayscale(p=0.1),
-        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),  # simpler stats from scratch
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],   # ImageNet stats
-                         std=[0.229, 0.224, 0.225]),
-    ])
-
-    eval_transform = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-    ])
+    train_transform = build_transforms(
+        is_training=True, use_imagenet_norm=use_imagenet_norm
+    )
+    eval_transform = build_transforms(
+        is_training=False, use_imagenet_norm=use_imagenet_norm
+    )
 
     train_dataset = VideoFrameDataset(
         root_dir=train_dir,
@@ -219,33 +210,36 @@ def main(cfg: DictConfig) -> None:
         weight_decay=1e-2,
     )
 
-    scheduler = torch.optim.lr_scheduler.SequentialLR(
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        schedulers=[
-            torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, total_iters=5),
-            torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=95),
-        ],
-        milestones=[5]
+        T_max=int(cfg.training.epochs),
+        eta_min=1e-6      # floor LR
     )
 
     best_val_accuracy = 0.0
     checkpoint_path = Path(cfg.training.checkpoint_path).resolve()
 
     for epoch in range(int(cfg.training.epochs)):
-        train_loss, train_acc = train_one_epoch(
-            model, train_loader, loss_fn, optimizer, device
+        train_loss, train_acc, train_top5 = train_one_epoch(
+            model, train_loader, loss_fn, optimizer, device, epoch
         )
-        val_loss, val_acc = evaluate_epoch(model, val_loader, loss_fn, device)
+        val_loss, val_acc, val_top5 = evaluate_epoch(model, val_loader, loss_fn, device)
 
         print(
             f"Epoch {epoch + 1}/{cfg.training.epochs} | "
-            f"train loss {train_loss:.4f} acc {train_acc:.4f} | "
-            f"val loss {val_loss:.4f} acc {val_acc:.4f}"
+            f"train loss {train_loss:.4f} acc {train_acc:.4f} top5 {train_top5:.4f} | "
+            f"val loss {val_loss:.4f} acc {val_acc:.4f} top5 {train_top5:.4f}"
         )
 
         scheduler.step()
 
-        run.log({"Train Loss": train_loss, "Val Loss": val_loss, "Train Accuracy": train_acc, "Val Accuracy": val_acc})
+        run.log({"Train Loss": train_loss, 
+                 "Val Loss": val_loss, 
+                 "Train Accuracy": train_acc, 
+                 "Val Accuracy": val_acc,
+                 "Train Top 5": train_top5,
+                 "Val Top5" : val_top5
+                 })
 
         if val_acc > best_val_accuracy:
             best_val_accuracy = val_acc
