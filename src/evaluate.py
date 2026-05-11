@@ -18,9 +18,10 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
-from dataset.video_dataset import VideoFrameDataset, collect_video_samples
+from dataset.video_dataset import VideoFrameDataset, collect_video_samples, VideoTransform
 from train import build_model
 from utils import build_transforms, set_seed
+from train import train_eval_transforms
 
 import wandb
 
@@ -77,7 +78,7 @@ def main(cfg: DictConfig) -> None:
 
     # Normalization must match how the checkpoint was trained (ImageNet stats if pretrained).
     pretrained_used = bool(raw.get("pretrained", cfg.model.pretrained))
-    eval_transform = build_transforms(is_training=False, use_imagenet_norm=pretrained_used)
+    _, eval_transform = train_eval_transforms(cfg)
 
     val_dir = Path(cfg.dataset.val_dir).resolve()
     val_samples = collect_video_samples(val_dir)

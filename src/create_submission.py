@@ -26,8 +26,10 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
-from dataset.video_dataset import VideoFrameDataset
-from train import build_model
+from torchvision import transforms
+
+from dataset.video_dataset import VideoFrameDataset, VideoTransform
+from train import build_model, train_eval_transforms
 from utils import build_transforms, set_seed
 
 
@@ -103,7 +105,7 @@ def build_model_from_checkpoint(ckpt: Dict[str, Any]) -> torch.nn.Module:
     """Rebuild the model using the saved Hydra config when available."""
     if "config" in ckpt and ckpt["config"] is not None:
         cfg = OmegaConf.create(ckpt["config"])
-        return build_model(cfg)
+        return build_model(cfg) # type: ignore
 
     cfg = OmegaConf.create(
         {
@@ -173,7 +175,7 @@ def main(cfg: DictConfig) -> None:
 
     num_frames = int(ckpt.get("num_frames", cfg.dataset.num_frames))
     pretrained = bool(ckpt.get("pretrained", cfg.model.pretrained))
-    eval_transform = build_transforms(is_training=False, use_imagenet_norm=pretrained)
+    _, eval_transform = train_eval_transforms(cfg)
 
     test_root = Path(cfg.dataset.test_dir).resolve()
     output_path = Path(cfg.dataset.submission_output).resolve()
