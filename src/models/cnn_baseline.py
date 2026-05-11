@@ -19,9 +19,9 @@ from torchvision import models
 
 
 class CNNBaseline(nn.Module):
-    def __init__(self, num_classes: int, pretrained: bool = False) -> None:
+    def __init__(self, num_classes: int, pretrained: bool = False, num_layers=2, dropout=0.1, num_frames=4) -> None:
         super().__init__()
-        weights = models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+        weights = None
         backbone = models.resnet18(weights=weights)
 
         # Replace the original 1000-way ImageNet head with identity; we add our own layer.
@@ -30,6 +30,25 @@ class CNNBaseline(nn.Module):
 
         self.backbone = backbone
         self.classifier = nn.Linear(feature_dim, num_classes)
+
+        layers = []
+        in_dim = feature_dim * num_frames
+        hidden_dim = in_dim * 2
+        for i in range(num_layers - 1):
+            layers += [
+                nn.Linear(in_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),    # LayerNorm between FC layers
+                nn.GELU(),                   # GELU > ReLU for transformer-style MLPs
+                nn.Dropout(dropout),
+            ]
+            in_dim = hidden_dim
+
+        # Final layer projects back to embed_dim (residual connection requires same dim)
+        layers.append(nn.Linear(hidden_dim, feature_dim * num_frames))
+        layers.append(nn.Dropout(dropout))
+
+        self.mlp  = nn.Sequential(*layers)
+        self.norm = nn.LayerNorm(feature_dim * num_frames)
 
     def forward(self, video_batch: torch.Tensor) -> torch.Tensor:
         """
@@ -48,9 +67,20 @@ class CNNBaseline(nn.Module):
         # Restore temporal structure: (B, T, 512)
         sequence_features = frame_features.view(batch_size, num_frames, -1)
 
+        x = sequence_features.view(batch_size, num_frames * 512)
+
+        x = x + self.mlp(self.norm(x))
+
+        x = x.view(batch_size, num_frames, -1)
+
         # Simple temporal pooling: average over frames -> (B, 512)
         pooled_features = sequence_features.mean(dim=1)
 
         # Class scores: (B, num_classes)
         logits = self.classifier(pooled_features)
         return logits
+
+if __name__ == "__main__":
+    vid = torch.rand(8, 4, 3, 224, 224)
+    model = CNNBaseline(33)
+    classes = model(vid)
