@@ -212,3 +212,5 @@ outputs/
 processed_data/
 
 wandb/
+
+submissions
