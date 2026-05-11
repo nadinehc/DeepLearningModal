@@ -1,0 +1,6 @@
+# @package _global_
+
+model:
+  name: BvideoMAE
+  pretrained: true
+  num_classes: ${num_classes}

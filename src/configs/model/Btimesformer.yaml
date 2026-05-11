@@ -1,0 +1,6 @@
+# @package _global_
+
+model:
+  name: Btimesformer
+  pretrained: true
+  num_classes: ${num_classes}

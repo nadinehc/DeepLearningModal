@@ -1,9 +1,13 @@
 # @package _global_
 training:
-  batch_size: 16
-  lr: 0.005
-  epochs: 30
+  batch_size: 32
+  lr: 3e-4
+  weight_decay: 0.05
+  epochs: 120
+  warmup_epochs: 10
+  min_lr: 1e-6
   num_workers: 2
+  phase1_epochs: 3
   # Where to save the best checkpoint (by validation accuracy)
-  checkpoint_path: ${hydra:runtime.cwd}/best_model.pt
+  checkpoint_path: /Data/nadine.hage-chehade/checkpoints/video_transformer_with_tsm.pt
   device: cuda

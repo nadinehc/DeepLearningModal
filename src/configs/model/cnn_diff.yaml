@@ -1,0 +1,6 @@
+# @package _global_
+# ResNet18 on frames and diff
+model:
+  name: cnn_diff
+  pretrained: false
+  num_classes: ${num_classes}

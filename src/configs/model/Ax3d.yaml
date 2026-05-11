@@ -1,0 +1,6 @@
+# @package _global_
+
+model:
+  name: Ax3d
+  pretrained: false
+  num_classes: ${num_classes}
