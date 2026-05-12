@@ -40,6 +40,7 @@ from models.cnn_diff import TwoStreamResNet18
 from models.TrackA.cnn_midfusion import MidFusionResNet18, build_mid_fusion_optimizer
 from models.TrackA.tiny_midfusion import TinyMidFusion, build_tiny_optimizer
 from models.TrackA.temporal_shift_cnn import TSMResNet
+from models.TrackA.temporal_shift_efficient_net import TSMEfficientNet
 
 from models.transformer import SingleBlockVideoTransformer, build_vit_optimizer, DividedSpaceTimeVideoTransformer
 from models.TrackB.timesformer import Timesformer, build_timesformer_optimizer, timesformer_transforms
@@ -58,6 +59,8 @@ def build_model(cfg: DictConfig) -> nn.Module:
     pretrained = cfg.model.pretrained
 
     # track A
+    if name == "Atemporal_shift_efficient":
+        return TSMEfficientNet(num_classes=num_classes, n_segment=int(cfg.dataset.num_frames))
     if name == "Atemporal_shift":
         return TSMResNet(num_classes=num_classes, n_segment=int(cfg.dataset.num_frames))
     if name == "Ax3d":
@@ -110,7 +113,7 @@ def build_model(cfg: DictConfig) -> nn.Module:
 def build_optimizer(model, cfg, steps):
     name = cfg.model.name
 
-    if name == "Acnn_midfusion_tiny" or name == "Ax3d" or name == "Atemporal_shift":
+    if name == "Acnn_midfusion_tiny" or name == "Ax3d" or name == "Atemporal_shift" or name == "Atemporal_shift_efficient":
         return build_tiny_optimizer(model, cfg, steps)
 
     if name == "Acnn_midfusion":
@@ -148,7 +151,7 @@ def train_eval_transforms(cfg):
     
     return VideoTransform(), VideoTransform(False)
 
-def mixup_batch(x, y, alpha=0.3):
+def mixup_batch(x, y, alpha=0.15):
     """
     x     : [B, T, C, H, W] video clips
     y     : [B] integer labels
@@ -189,12 +192,13 @@ def train_one_epoch(
         video_batch = video_batch.to(device)
         labels = labels.to(device)
 
+        x_mix, y_a, y_b, lam = mixup_batch(video_batch, labels, alpha=0.3)
+
         optimizer.zero_grad()
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            logits = model(video_batch)  # (B, num_classes)
-            loss = loss_fn(logits, labels)
-
+            logits = model(x_mix)  # (B, num_classes)
+            loss = lam * loss_fn(logits, y_a) + (1-lam) * loss_fn(logits, y_b)
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -259,7 +263,7 @@ def main(cfg: DictConfig) -> None:
     run = wandb.init(
         entity="nadinehagechehade-project",
     # Set the wandb project where this run will be logged.
-    project="retry",
+    project="trackA",
         config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)   # type: ignore
     )
     print(OmegaConf.to_yaml(cfg))
@@ -273,19 +277,9 @@ def main(cfg: DictConfig) -> None:
     device = torch.device(device_str)
 
     train_dir = Path(cfg.dataset.train_dir).resolve()
-    all_samples = collect_video_samples(train_dir)
-
-    max_samples = cfg.dataset.get("max_samples")
-    if max_samples is not None:
-        all_samples = all_samples[: int(max_samples)]
-
-    train_samples, val_samples = split_train_val(
-        all_samples,
-        val_ratio=float(cfg.dataset.val_ratio),
-        seed=int(cfg.dataset.seed),
-    )
-
-    train_frequences = np.bincount([s[1] for s in train_samples])
+    val_dir = Path(cfg.dataset.val_dir).resolve()
+    train_samples = collect_video_samples(train_dir)
+    val_samples = collect_video_samples(val_dir)
 
     train_transform, eval_transform = train_eval_transforms(cfg)
 
@@ -295,8 +289,9 @@ def main(cfg: DictConfig) -> None:
         transform=train_transform,
         sample_list=train_samples,
     )
+
     val_dataset = VideoFrameDataset(
-        root_dir=train_dir,
+        root_dir=val_dir,
         num_frames=int(cfg.dataset.num_frames),
         transform=eval_transform,
         sample_list=val_samples,
@@ -328,7 +323,7 @@ def main(cfg: DictConfig) -> None:
             temperature=4.0
         )
     else:   
-        loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
+        loss_fn = nn.CrossEntropyLoss(label_smoothing=0.2)
 
     optimizer, scheduler = build_optimizer(model, cfg, len(train_loader))
 
@@ -350,7 +345,7 @@ def main(cfg: DictConfig) -> None:
         print(
             f"Epoch {epoch + 1}/{cfg.training.epochs} | "
             f"train loss {train_loss:.4f} acc {train_acc:.4f} top5 {train_top5:.4f} | "
-            f"val loss {val_loss:.4f} acc {val_acc:.4f} top5 {train_top5:.4f}"
+            f"val loss {val_loss:.4f} acc {val_acc:.4f} top5 {val_top5:.4f}"
         )
 
         run.log({"Train Loss": train_loss, 

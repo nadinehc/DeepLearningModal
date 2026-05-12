@@ -1,4 +1,4 @@
 # @package _global_
 # Baseline experiment: ResNet18 + temporal average pooling
 defaults:
-  - override /model: Atemporal_shift
+  - override /model: Atemporal_shift_efficient

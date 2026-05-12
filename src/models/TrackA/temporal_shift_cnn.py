@@ -4,7 +4,7 @@ from torchvision import models
 from torchvision.models.resnet import BasicBlock
 
 class TemporalShift(nn.Module):
-    def __init__(self, n_segment=4, n_div=8):
+    def __init__(self, n_segment=4, n_div=4):
         super().__init__()
         self.n_segment = n_segment
         self.fold_div = n_div
@@ -44,7 +44,7 @@ class TSMBasicBlock(BasicBlock):
         out = self.conv2(out)
         out = self.bn2(out)
 
-        if self.downsample is not None:
+        if self.downsample is not None: # use tsm or not ? (tried both, not much difference)
             identity = self.downsample(self.tsm(x))
 
         out += identity
@@ -63,26 +63,23 @@ class TSMResNet(nn.Module):
         # PASS THE CLASS, NOT A LAMBDA
         self.model = models.ResNet(
             block=ConfiguredTSMBlock, 
-            layers=[2, 2, 2, 2]
+            layers=[1, 1, 1, 1]
         )
-        self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
 
-        self.temporal_fc = nn.Linear(num_classes, 1)
+        self.model.fc = nn.Sequential( # type: ignore
+            nn.Dropout(p=0.5),
+            nn.Linear(self.model.fc.in_features, num_classes)
+        ) 
     
     def forward(self, x):
         # x: (B, T, C, H, W)
         b, t, c, h, w = x.shape
         x = x.view(b * t, c, h, w)
-        logits = self.model(x)
-
-        logits = self.model(x)
-    
+        logits = self.model(x)    
         logits = logits.view(b, t, -1)
 
-        # forward
-        weights = self.temporal_fc(logits)      # [B, T, 1]
-        weights = torch.softmax(weights, dim=1)
-        out = (logits * weights).sum(dim=1)
+        # forwardd
+        out = logits.mean(dim=1)  # (B, num_classes)
         
         return out
 
